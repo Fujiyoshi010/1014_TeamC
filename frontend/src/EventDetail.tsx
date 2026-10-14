@@ -4,6 +4,8 @@ import {
   formatDateTime,
   STATUS_LABEL,
   type EventDetail,
+  type EventSummary03,
+  type HistoryEntry,
   type RsvpStatus,
 } from "./api";
 
@@ -22,11 +24,21 @@ export function EventDetailView({
   const [status, setStatus] = useState<RsvpStatus>("attend");
   const [message, setMessage] = useState("");
   const [newCapacity, setNewCapacity] = useState("");
+  // 03 一覧と集計（追加表示用。既存stateは触らない）
+  const [summary03, setSummary03] = useState<EventSummary03 | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[]>([]);
 
   async function load() {
     try {
       const data = await api.getEvent(eventId);
       setEvent(data);
+      // 03は別APIで取得（失敗しても既存表示は壊さない）
+      try {
+        setSummary03(await api.getSummary03(eventId));
+        setHistory(await api.getHistory(eventId));
+      } catch {
+        /* 03取得失敗時は非表示のまま */
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : "取得に失敗しました");
     }
@@ -147,6 +159,59 @@ export function EventDetailView({
           ))}
         </ul>
       </section>
+
+      {/* 03 一覧と集計（追加セクション。01/02のUI・APIは無変更） */}
+      {summary03 && (
+        <section style={{ border: "2px solid #333", padding: 12, margin: "16px 0" }}>
+          <h3>
+            03 一覧と集計 {summary03.finalized && <span style={{ color: "red" }}>【確定】</span>}
+          </h3>
+          <p>
+            固定締切: {formatDateTime(summary03.fixedDeadline)}（開催日前日23:59固定）
+          </p>
+          <p>
+            <strong>参加: {summary03.counts.attend}名</strong> ／ 不参加:{" "}
+            {summary03.counts.decline}名 ／ 未定: {summary03.counts.maybe}名
+            （※未定は数えない）
+          </p>
+          <h4>{summary03.finalized ? "確定名簿（繰り上げなし）" : "参加者一覧"}</h4>
+          <ul>
+            {summary03.participants.map((p) => (
+              <li key={p.name}>{p.name}</li>
+            ))}
+          </ul>
+          <h4>変更履歴（いつ・誰が・何に変えたか）</h4>
+          {history.length === 0 ? (
+            <p>履歴はまだありません。</p>
+          ) : (
+            <table
+              border={1}
+              cellPadding={6}
+              style={{ borderCollapse: "collapse", width: "100%" }}
+            >
+              <thead>
+                <tr>
+                  <th>いつ</th>
+                  <th>誰が</th>
+                  <th>変更</th>
+                </tr>
+              </thead>
+              <tbody>
+                {history.map((h) => (
+                  <tr key={h.id}>
+                    <td>{formatDateTime(h.at)}</td>
+                    <td>{h.actor}</td>
+                    <td>
+                      {h.from ? STATUS_LABEL[h.from] : "（新規）"} →{" "}
+                      {STATUS_LABEL[h.to]}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </section>
+      )}
     </div>
   );
 }

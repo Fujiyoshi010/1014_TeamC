@@ -184,13 +184,95 @@ app.post("/api/events/:id/rsvps", async (c) => {
   }
 
   const key = name.trim();
+  const prev = event.rsvps[key]?.status ?? null;
   // 同じ名前なら最後の回答で上書き
   event.rsvps[key] = {
     name: key,
     status,
     updatedAt: new Date().toISOString(),
   };
+  // 03-2: 変更履歴は全件残す（いつ・誰が・何に変えたか）。既存の上書き動作は変えない
+  const list = histories.get(event.id) ?? [];
+  list.push({
+    id: randomUUID(),
+    eventId: event.id,
+    name: key,
+    from: prev,
+    to: status,
+    at: new Date().toISOString(),
+    actor: key,
+  });
+  histories.set(event.id, list);
   return c.json(toDetail(event));
+});
+
+// ===== 03 一覧と集計（追加・既存破壊なし） =====
+
+export interface HistoryEntry {
+  id: string;
+  eventId: string;
+  name: string;
+  /** 初回は null */
+  from: RsvpStatus | null;
+  to: RsvpStatus;
+  at: string;
+  actor: string;
+}
+
+const histories = new Map<string, HistoryEntry[]>();
+
+/** 運営依頼: 締切は「開催日の前日23:59」で固定（JST）。既存の自由deadlineとは別に算出する */
+export function getFixedDeadline(datetimeISO: string): Date {
+  const base = new Date(datetimeISO);
+  // JSTの日付部分を取得
+  const jstDate = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "Asia/Tokyo",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(base); // YYYY-MM-DD
+  const midnightJst = new Date(`${jstDate}T00:00:00+09:00`);
+  return new Date(midnightJst.getTime() - 24 * 3600 * 1000 + (23 * 3600 + 59 * 60 + 59) * 1000);
+}
+
+export function isFixedClosed(datetimeISO: string, now = Date.now()): boolean {
+  return now > getFixedDeadline(datetimeISO).getTime();
+}
+
+/** 依頼1: 集計は「参加」だけ。「未定」は数えない。参加者名簿を返す */
+export function participantsOf(event: EventItem): Rsvp[] {
+  return Object.values(event.rsvps)
+    .filter((r) => r.status === "attend")
+    .sort((a, b) => a.updatedAt.localeCompare(b.updatedAt));
+}
+
+// ===== 03 一覧と集計: 追加API（既存APIは無変更） =====
+
+// 変更履歴: いつ・誰が・何に変えたか（新順）
+app.get("/api/events/:id/history", (c) => {
+  const event = events.get(c.req.param("id"));
+  if (!event) return c.json({ message: "イベントが見つかりません" }, 404);
+  const list = [...(histories.get(event.id) ?? [])].sort((a, b) =>
+    b.at.localeCompare(a.at),
+  );
+  return c.json(list);
+});
+
+// 一覧+集計: 参加だけ数える・固定締切・確定名簿（繰り上げなし）
+app.get("/api/events/:id/summary", (c) => {
+  const event = events.get(c.req.param("id"));
+  if (!event) return c.json({ message: "イベントが見つかりません" }, 404);
+  const fixedDeadline = getFixedDeadline(event.datetime);
+  const fixedClosed = isFixedClosed(event.datetime);
+  const participants = participantsOf(event);
+  return c.json({
+    ...toDetail(event),
+    fixedDeadline: fixedDeadline.toISOString(),
+    fixedClosed,
+    // 確定後はこの名簿で固定し、繰り上げしない
+    participants,
+    finalized: fixedClosed,
+  });
 });
 
 const port = Number(process.env.PORT ?? 3001);

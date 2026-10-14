@@ -21,6 +21,23 @@ export interface EventDetail extends EventSummary {
   rsvps: Rsvp[];
 }
 
+export interface HistoryEntry {
+  id: string;
+  eventId: string;
+  name: string;
+  from: RsvpStatus | null;
+  to: RsvpStatus;
+  at: string;
+  actor: string;
+}
+
+export interface EventSummary03 extends EventDetail {
+  fixedDeadline: string;
+  fixedClosed: boolean;
+  participants: Rsvp[];
+  finalized: boolean;
+}
+
 export const STATUS_LABEL: Record<RsvpStatus, string> = {
   attend: "参加",
   decline: "不参加",
@@ -68,6 +85,11 @@ export const api = {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     }).then(handle),
+  // 03 一覧と集計（追加・既存無変更）
+  getHistory: (id: string): Promise<HistoryEntry[]> =>
+    fetch(`${BASE}/api/events/${id}/history`).then(handle),
+  getSummary03: (id: string): Promise<EventSummary03> =>
+    fetch(`${BASE}/api/events/${id}/summary`).then(handle),
 };
 
 export function formatDateTime(iso: string): string {
