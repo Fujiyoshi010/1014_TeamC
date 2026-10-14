@@ -1,26 +1,21 @@
-# イベント出欠アプリ
+# 会場 04 キャンセル待ち (React + Hono + TypeScript / pnpm)
 
-React + Hono + TypeScript (pnpm)
+## 要件対応
 
-## 構成
-
-- `backend/` Hono API (`:3001`)
-- `frontend/` React + Vite (`:5173`)
+1. **椅子は「参加」と「未定」の合計**: `packages/waitlist` の `countChairs()` が `intent==="attending" || "maybe"` かつ `status==="confirmed"` を数える。`POST /api/events/:eventId/rsvps` は空きがなければ `waitlisted + position` で返す。
+2. **空きが出たら先頭を自動繰り上げ**: `cancelParticipant()` が FIFO (`createdAt`, `seq` 昇順) で1名だけ繰り上げ。`DELETE .../rsvps/:id` と `PATCH .../capacity` がこれを実行する。排他は `EventStore.withLock(eventId)` で直列化。
+3. **繰り上がりはメール通知**: Hono は `Mailer.sendPromotion()` を繰り上げ順に呼ぶ。既定は `InMemoryMailer` (履歴保持+console)。本番は SMTP/Resend/SES 等の実装に差し替え。送信失敗しても繰り上げは取り消さず `warnings` で返す。
 
 ## 起動
 
-```sh
+```bash
 pnpm install
-pnpm --filter backend dev   # API
-pnpm --filter frontend dev  # UI
+pnpm --filter @opencd/api dev   # http://localhost:8787
+pnpm --filter @opencd/web dev   # http://localhost:5173
 ```
 
-## 仕様対応
+## テスト
 
-1. イベントはタイトル・開催日時・定員を持つ (`POST /api/events`)
-2. 締め切りはイベントごとに主催者が自由に設定 (`deadline`)
-3. 定員はあとから増やせる (`PATCH /api/events/:id`、減少は400)
-4. 回答は名前だけ (登録・メール不要)
-5. 参加 / 不参加 / 未定 の3択 (`attend` / `decline` / `maybe`)
-6. 締め切りまでは何度でも上書き可 (同名は最後の回答で上書き、締め切り後は400)
+```bash
+pnpm test
 ```
