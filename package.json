@@ -1,0 +1,11 @@
+{
+  "name": "event-rsvp-app",
+  "version": "1.0.0",
+  "private": true,
+  "packageManager": "pnpm@9",
+  "scripts": {
+    "dev": "pnpm --parallel dev",
+    "build": "pnpm --recursive build",
+    "start": "pnpm --filter backend start"
+  }
+}
