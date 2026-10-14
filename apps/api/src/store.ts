@@ -6,6 +6,27 @@ export interface VenueEvent {
   capacity: number;
   participants: Participant[];
   seq: number;
+  /** 開催日 (YYYY-MM-DD)。未設定の場合は締切なしとして扱う（04互換） */
+  eventDate?: string;
+  /** 03: 変更履歴（いつ・誰が・何に変えたか）。追記のみ */
+  history: HistoryEntry[];
+}
+
+/** 03: 回答の変更履歴1件 */
+export interface HistoryEntry {
+  id: string;
+  eventId: string;
+  /** ISO8601 */
+  at: string;
+  /** 操作者名 */
+  actor: string;
+  actorEmail?: string;
+  kind: "register" | "cancel" | "promote" | "capacity";
+  /** 変更前（初回は null） */
+  from: string | null;
+  /** 変更後 */
+  to: string;
+  detail?: string;
 }
 
 export class EventStore {
@@ -21,9 +42,10 @@ export class EventStore {
     return this.events.get(eventId);
   }
 
-  createEvent(id: string, name: string, capacity: number): VenueEvent {
+  createEvent(id: string, name: string, capacity: number, eventDate?: string): VenueEvent {
     if (this.events.has(id)) throw new Error(`event already exists: ${id}`);
-    const e: VenueEvent = { id, name, capacity, participants: [], seq: 0 };
+    const e: VenueEvent = { id, name, capacity, participants: [], seq: 0, history: [] };
+    if (eventDate) e.eventDate = eventDate;
     this.events.set(id, e);
     return e;
   }

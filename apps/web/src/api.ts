@@ -24,6 +24,48 @@ export const intentLabel: Record<RsvpIntent, string> = {
   maybe: "未定",
 };
 
+// ===== 03 一覧と集計（追加） =====
+
+export interface HistoryEntry {
+  id: string;
+  eventId: string;
+  at: string;
+  actor: string;
+  actorEmail?: string;
+  kind: "register" | "cancel" | "promote" | "capacity";
+  from: string | null;
+  to: string;
+  detail?: string;
+}
+
+export interface EventSummary03 {
+  id: string;
+  name: string;
+  capacity: number;
+  eventDate?: string;
+  fixedDeadline: string | null;
+  fixedClosed: boolean;
+  finalized: boolean;
+  attendingCount: number;
+  maybeCount: number;
+  chairsNeeded: number;
+  participants: Participant[];
+  confirmed: Participant[];
+  waitlist: Participant[];
+}
+
+export async function fetchHistory(eventId: string): Promise<HistoryEntry[]> {
+  const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/history`);
+  if (!res.ok) throw new Error(`failed to load history (${res.status})`);
+  return res.json();
+}
+
+export async function fetchSummary(eventId: string): Promise<EventSummary03> {
+  const res = await fetch(`/api/events/${encodeURIComponent(eventId)}/summary`);
+  if (!res.ok) throw new Error(`failed to load summary (${res.status})`);
+  return res.json();
+}
+
 export async function fetchEvent(eventId: string): Promise<EventState> {
   const res = await fetch(`/api/events/${encodeURIComponent(eventId)}`);
   if (!res.ok) throw new Error(`failed to load event (${res.status})`);

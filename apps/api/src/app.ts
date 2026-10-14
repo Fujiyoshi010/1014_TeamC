@@ -17,6 +17,46 @@ export interface AppEnv {
   mailer: Mailer;
 }
 
+// ===== 03 一覧と集計（追加・04互換維持） =====
+
+/** 開催日(YYYY-MM-DD)の前日23:59:59を締切とする。JST固定 */
+export function getFixedDeadline(eventDate: string): Date {
+  const midnightJst = new Date(`${eventDate}T00:00:00+09:00`);
+  return new Date(midnightJst.getTime() - 24 * 3600 * 1000 + (23 * 3600 + 59 * 60 + 59) * 1000);
+}
+
+/** eventDate未設定 → 締切なし（false）。04既存イベントは影響なし */
+export function isFixedClosed(eventDate: string | undefined, now = Date.now()): boolean {
+  if (!eventDate) return false;
+  return now > getFixedDeadline(eventDate).getTime();
+}
+
+/** 03-1: 集計は「参加」(attending確定)のみ。「未定」は数えない（椅子数とは別指標） */
+export function countAttending(participants: readonly Participant[]): number {
+  return participants.filter((p) => p.status === "confirmed" && p.intent === "attending").length;
+}
+
+export function countMaybeConfirmed(participants: readonly Participant[]): number {
+  return participants.filter((p) => p.status === "confirmed" && p.intent === "maybe").length;
+}
+
+/** 03-3: 確定名簿。締切後はこのスナップショットで固定し、繰り上げしない */
+export function attendingRoster(participants: readonly Participant[]): Participant[] {
+  return participants
+    .filter((p) => p.status === "confirmed" && p.intent === "attending")
+    .sort((a, b) =>
+      a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : a.seq - b.seq,
+    );
+}
+
+function isValidEventDate(v: unknown): v is string {
+  return (
+    typeof v === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(v) &&
+    !Number.isNaN(Date.parse(`${v}T00:00:00+09:00`))
+  );
+}
+
 export function createApp(env?: Partial<AppEnv>) {
   const store = env?.store ?? new EventStore();
   const mailer = env?.mailer ?? new InMemoryMailer();
@@ -46,6 +86,11 @@ export function createApp(env?: Partial<AppEnv>) {
         freeSeats: Math.max(0, e.capacity - chairs),
         confirmed: e.participants.filter((p) => p.status === "confirmed"),
         waitlist: waitlist.map((p, i) => ({ ...p, position: i + 1 })),
+        // 03追加（既存フィールドは無変更）
+        ...(e.eventDate ? { eventDate: e.eventDate } : {}),
+        fixedDeadline: e.eventDate ? getFixedDeadline(e.eventDate).toISOString() : null,
+        fixedClosed: isFixedClosed(e.eventDate),
+        attendingCount: countAttending(e.participants),
       });
     } catch {
       return c.json({ error: "event not found" }, 404);
@@ -54,16 +99,25 @@ export function createApp(env?: Partial<AppEnv>) {
 
   app.post("/api/events", async (c) => {
     const body = await c.req.json().catch(() => ({}));
-    const { id, name, capacity } = body as {
+    const { id, name, capacity, eventDate } = body as {
       id?: string;
       name?: string;
       capacity?: number;
+      eventDate?: unknown;
     };
     if (!id || !name || !Number.isInteger(capacity) || (capacity as number) < 0) {
       return c.json({ error: "id, name, capacity(non-negative int) required" }, 400);
     }
+    if (eventDate !== undefined && !isValidEventDate(eventDate)) {
+      return c.json({ error: "eventDate must be YYYY-MM-DD" }, 400);
+    }
     try {
-      const e = store.createEvent(id, name, capacity as number);
+      const e = store.createEvent(
+        id,
+        name,
+        capacity as number,
+        eventDate !== undefined ? (eventDate as string) : undefined,
+      );
       return c.json(e, 201);
     } catch {
       return c.json({ error: "event already exists" }, 409);
@@ -89,6 +143,11 @@ export function createApp(env?: Partial<AppEnv>) {
       );
     }
     try {
+      // 03-3: 開催日設定済みで締切後は名簿確定のため受付しない（未設定は従来通り）
+      const existing = store.getOrThrow(eventId);
+      if (isFixedClosed(existing.eventDate)) {
+        return c.json({ error: "closed: 名簿は確定済みです（繰り上げなし）" }, 403);
+      }
       const result = await store.withLock(eventId, () => {
         const e = store.getOrThrow(eventId);
         const r = registerParticipant(e.participants, e.capacity, {
@@ -100,6 +159,18 @@ export function createApp(env?: Partial<AppEnv>) {
           seq: store.nextSeq(e),
         });
         e.participants = [...e.participants, r.participant];
+        // 03-2: 変更履歴に追記（いつ・誰が・何に変えたか）
+        e.history.push({
+          id: crypto.randomUUID(),
+          eventId: e.id,
+          at: new Date().toISOString(),
+          actor: name,
+          actorEmail: email,
+          kind: "register",
+          from: null,
+          to: `${intent}(${r.outcome})`,
+          detail: r.outcome === "waitlisted" ? `position ${r.position}` : undefined,
+        });
         return r;
       });
       if (result.outcome === "confirmed") {
@@ -127,11 +198,39 @@ export function createApp(env?: Partial<AppEnv>) {
     const eventId = c.req.param("eventId");
     const rsvpId = c.req.param("rsvpId");
     try {
+      // 03-3: 締切後（開催日設定済みのみ）は名簿確定のため変更不可
+      if (isFixedClosed(store.getOrThrow(eventId).eventDate)) {
+        return c.json({ error: "closed: 名簿は確定済みです（繰り上げなし）" }, 403);
+      }
       const out = await store.withLock(eventId, async () => {
         const e = store.getOrThrow(eventId);
         const r = cancelParticipant(e.participants, rsvpId, new Date().toISOString());
         e.participants = r.participants;
         const warnings: string[] = [];
+        if (r.cancelled) {
+          e.history.push({
+            id: crypto.randomUUID(),
+            eventId: e.id,
+            at: new Date().toISOString(),
+            actor: r.cancelled.name,
+            actorEmail: r.cancelled.email,
+            kind: "cancel",
+            from: `${r.cancelled.intent}(${r.cancelled.status})`,
+            to: "cancelled",
+          });
+        }
+        for (const pr of r.promotions) {
+          e.history.push({
+            id: crypto.randomUUID(),
+            eventId: e.id,
+            at: new Date().toISOString(),
+            actor: pr.name,
+            actorEmail: pr.email,
+            kind: "promote",
+            from: "waitlisted",
+            to: "confirmed",
+          });
+        }
         for (const pr of r.promotions) {
           try {
             await mailer.sendPromotion({
@@ -171,6 +270,10 @@ export function createApp(env?: Partial<AppEnv>) {
     try {
       const out = await store.withLock(eventId, async () => {
         const e = store.getOrThrow(eventId);
+        // 03-3: 締切後は定員変更も不可（名簿確定）
+        if (isFixedClosed(e.eventDate)) {
+          throw new Error("closed");
+        }
         const r = applyCapacityChange(
           e.participants,
           capacity as number,
@@ -178,6 +281,15 @@ export function createApp(env?: Partial<AppEnv>) {
         );
         e.participants = r.participants;
         e.capacity = capacity as number;
+        e.history.push({
+          id: crypto.randomUUID(),
+          eventId: e.id,
+          at: new Date().toISOString(),
+          actor: "organizer",
+          kind: "capacity",
+          from: null,
+          to: `capacity=${capacity}`,
+        });
         for (const pr of r.promotions) {
           await mailer.sendPromotion({
             to: pr.email,
@@ -190,9 +302,53 @@ export function createApp(env?: Partial<AppEnv>) {
       });
       return c.json({ capacity, promotions: out.promotions });
     } catch (e) {
+      if (e instanceof Error && e.message === "closed")
+        return c.json({ error: "closed: 名簿は確定済みです（繰り上げなし）" }, 403);
       if (e instanceof Error && e.message.startsWith("event not found"))
         return c.json({ error: "event not found" }, 404);
       throw e;
+    }
+  });
+
+  // ===== 03 一覧と集計: 追加API（既存APIは無変更） =====
+
+  /** 変更履歴: いつ・誰が・何に変えたか（新順） */
+  app.get("/api/events/:eventId/history", (c) => {
+    try {
+      const e = store.getOrThrow(c.req.param("eventId"));
+      return c.json([...e.history].sort((a, b) => b.at.localeCompare(a.at)));
+    } catch {
+      return c.json({ error: "event not found" }, 404);
+    }
+  });
+
+  /**
+   * 一覧+集計:
+   * - attendingCount は「参加」確定のみ（未定は数えない）
+   * - chairsNeeded は04互換（参加+未定の椅子数）のまま併記
+   * - fixedClosed後は participants を確定名簿として返し、繰り上げしない
+   */
+  app.get("/api/events/:eventId/summary", (c) => {
+    try {
+      const e = store.getOrThrow(c.req.param("eventId"));
+      const fixedClosed = isFixedClosed(e.eventDate);
+      return c.json({
+        id: e.id,
+        name: e.name,
+        capacity: e.capacity,
+        ...(e.eventDate ? { eventDate: e.eventDate } : {}),
+        fixedDeadline: e.eventDate ? getFixedDeadline(e.eventDate).toISOString() : null,
+        fixedClosed,
+        finalized: fixedClosed,
+        attendingCount: countAttending(e.participants),
+        maybeCount: countMaybeConfirmed(e.participants),
+        chairsNeeded: countChairs(e.participants),
+        participants: attendingRoster(e.participants),
+        confirmed: e.participants.filter((p) => p.status === "confirmed"),
+        waitlist: getWaitlist(e.participants),
+      });
+    } catch {
+      return c.json({ error: "event not found" }, 404);
     }
   });
 

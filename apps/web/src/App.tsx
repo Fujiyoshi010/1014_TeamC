@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { EventBoard } from "./EventBoard";
 import { RsvpForm } from "./RsvpForm";
+import { SummaryBoard } from "./SummaryBoard";
 import { useEvent } from "./useEvent";
 
 const EVENT_ID = "demo";
@@ -26,6 +27,9 @@ export default function App() {
         {state && (
           <EventBoard state={state} eventId={EVENT_ID} onChange={refresh} />
         )}
+      </div>
+      <div style={{ marginTop: 24 }}>
+        <SummaryBoard eventId={EVENT_ID} />
       </div>
     </main>
   );
